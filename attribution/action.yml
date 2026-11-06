@@ -1,0 +1,29 @@
+# Fail when any commit in a range credits an AI agent as author, committer or co-author
+# (scripts/ai_attribution.py). Needs a checkout with the range's history (fetch-depth: 0).
+name: No AI contributors
+description: Reject commits whose author, committer or trailers credit an AI coding agent.
+inputs:
+  base:
+    description: The first commit outside the range (the pull request's base).
+    required: true
+  head:
+    description: The last commit in the range (the pull request's head).
+    required: true
+  working-directory:
+    description: The checkout to read.
+    required: false
+    default: "."
+runs:
+  using: composite
+  steps:
+    - name: Check the range
+      shell: bash
+      env:
+        WORKDIR: ${{ inputs.working-directory }}
+        BASE_SHA: ${{ inputs.base }}
+        HEAD_SHA: ${{ inputs.head }}
+      run: |
+        set -euo pipefail
+        script="$GITHUB_ACTION_PATH/../scripts/ai_attribution.py"
+        cd -- "$WORKDIR"
+        python3 "$script" check "$BASE_SHA..$HEAD_SHA"

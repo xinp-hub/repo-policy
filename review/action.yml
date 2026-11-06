@@ -1,0 +1,44 @@
+# Run the independent reviewer on a Tier 1 pull request (scripts/agent_review.py).
+#
+# The reviewer commands and keys are not inputs: the calling step passes them as `env:`
+# (AGENT_REVIEW_COMMAND, AGENT_REVIEW_KEY_ENV, AGENT_REVIEW_API_KEY and the FALLBACK
+# trio), and agent_review.py hands each reviewer only its own key, in an empty directory.
+# A command names a bundled reviewer through $AGENT_REVIEW_SCRIPTS, this action's scripts
+# directory at the pinned commit.
+name: Merge policy review
+description: Ask the configured reviewer for a verdict on a Tier 1 pull request; it can only withhold a merge.
+inputs:
+  working-directory:
+    description: Checkout of the pull request with full history. Read as data, never executed.
+    required: true
+  base:
+    description: The base commit. Under pull_request_target, github.sha.
+    required: true
+  head:
+    description: The pull request's head commit.
+    required: true
+  rubric:
+    description: The review rubric, relative to the workspace, from the base branch's checkout.
+    required: true
+outputs:
+  approved:
+    description: The string true only when the reviewer approved with minor or nit findings.
+    value: ${{ steps.review.outputs.approved }}
+runs:
+  using: composite
+  steps:
+    - name: Review
+      id: review
+      shell: bash
+      env:
+        WORKDIR: ${{ inputs.working-directory }}
+        BASE_SHA: ${{ inputs.base }}
+        HEAD_SHA: ${{ inputs.head }}
+        RUBRIC: ${{ inputs.rubric }}
+      run: |
+        set -euo pipefail
+        script="$GITHUB_ACTION_PATH/../scripts/agent_review.py"
+        case "$RUBRIC" in /*) rubric="$RUBRIC" ;; *) rubric="$PWD/$RUBRIC" ;; esac
+        if [ ! -f "$rubric" ]; then echo "::error::no rubric at $RUBRIC"; exit 1; fi
+        cd -- "$WORKDIR"
+        python3 "$script" --base "$BASE_SHA" --head "$HEAD_SHA" --rubric "$rubric"

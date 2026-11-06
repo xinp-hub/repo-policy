@@ -1,0 +1,63 @@
+# Decide a pull request's risk tier from its author, files and diff (scripts/merge_policy.py).
+#
+# Call it from a pull_request_target workflow, pinned by commit SHA, with the pull request
+# checked out as data in `working-directory`. Every input reaches the shell through `env:`:
+# a ${{ }} expression pasted into a script is code, an environment variable is data.
+name: Merge policy classify
+description: Decide a pull request's risk tier (0, 1 or 2) deterministically from its author, files and diff.
+inputs:
+  working-directory:
+    description: Checkout of the pull request with full history. Read as data, never executed.
+    required: true
+  base:
+    description: The base commit. Under pull_request_target, github.sha.
+    required: true
+  head:
+    description: The pull request's head commit.
+    required: true
+  commits-json:
+    description: File listing every PR commit as sha, author, committer and verified.
+    required: true
+  pushers-json:
+    description: File listing the login of every actor in the head branch's activity log.
+    required: true
+  deps-json:
+    description: File holding fetch-metadata's updated-dependencies-json. Ignored when absent.
+    required: false
+    default: ""
+  api-break:
+    description: The string true when griffe reports a breaking public API change.
+    required: false
+    default: "false"
+  authors:
+    description: Logins allowed to reach Tier 1 (the AUTOMERGE_AUTHORS variable).
+    required: false
+    default: ""
+outputs:
+  tier:
+    description: The risk tier, 0, 1 or 2.
+    value: ${{ steps.classify.outputs.tier }}
+runs:
+  using: composite
+  steps:
+    - name: Classify
+      id: classify
+      shell: bash
+      env:
+        WORKDIR: ${{ inputs.working-directory }}
+        BASE_SHA: ${{ inputs.base }}
+        HEAD_SHA: ${{ inputs.head }}
+        COMMITS_JSON: ${{ inputs.commits-json }}
+        PUSHERS_JSON: ${{ inputs.pushers-json }}
+        DEPS_JSON: ${{ inputs.deps-json }}
+        API_BREAK: ${{ inputs.api-break }}
+        AUTOMERGE_AUTHORS: ${{ inputs.authors }}
+      run: |
+        set -euo pipefail
+        script="$GITHUB_ACTION_PATH/../scripts/merge_policy.py"
+        cd -- "$WORKDIR"
+        args=(classify --base "$BASE_SHA" --head "$HEAD_SHA"
+              --commits-json "$COMMITS_JSON" --pushers-json "$PUSHERS_JSON")
+        if [ -n "$DEPS_JSON" ] && [ -f "$DEPS_JSON" ]; then args+=(--deps-json "$DEPS_JSON"); fi
+        if [ "$API_BREAK" = "true" ]; then args+=(--api-break); fi
+        python3 "$script" "${args[@]}"
