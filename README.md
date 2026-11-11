@@ -36,6 +36,10 @@ decision binding, and none of it lives here:
   which `merge_policy.py` does: Tier 1 is an allowlist of `src/`, `tests/`, `docs/`,
   `README.md` and `CHANGELOG.md`, and Tier 0 is only `uv.lock` and `pyproject.toml`.
 
+A release is always Tier 2, although its files sit on Tier 1 paths: `merge_policy.py` holds
+any pull request that changes `__version__` in a Python file, adds a release heading such
+as `## [1.7.0]` to `CHANGELOG.md`, or carries the `release` label.
+
 ### classify
 
 ```yaml

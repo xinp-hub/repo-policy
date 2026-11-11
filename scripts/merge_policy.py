@@ -7,10 +7,11 @@
     Tier 1  Small same-repository PR whose opener and every pusher of its branch (from
             GitHub's activity log, not from forgeable commit emails) are allowlisted,
             touching only Python under src/ and tests/ and Markdown docs, that breaks no
-            public API, deletes no tests and weakens no check.
+            public API, deletes no tests, weakens no check and is not a release.
             Auto-merges when CI is green and an independent agent review approves.
-    Tier 2  Everything else -- including every GitHub Actions bump. A human reviews and
-            merges it (FORGE gate HG4).
+    Tier 2  Everything else -- including every GitHub Actions bump and every release (a
+            changed package version, a new changelog release heading, or the `release`
+            label). A human reviews and merges it (FORGE gate HG4).
 
 The tier comes from the author, the file list, file modes and the diff -- never from an
 agent's opinion -- so a persuasive pull request cannot talk its way into a lower tier.
@@ -83,7 +84,7 @@ ZERO_MINOR = "0.x minor"
 # fetch-metadata's dependency-type for a direct development dependency (a dev group in uv).
 DEV_DEPENDENCY = "direct:development"
 
-HOLD_LABELS = frozenset({"hold", "do-not-merge", "needs-human"})
+HOLD_LABELS = frozenset({"hold", "do-not-merge", "needs-human", "release"})
 MAX_LINES = 400
 HUMAN_TIER = 2
 MAX_FILES = 20
@@ -104,6 +105,36 @@ WEAKENING = re.compile(
     r"|#\s*nosec|#\s*mypy:|#\s*pyright:|#\s*pylint:\s*disable"
     r"|--no-verify|fail_under|cov-fail-under|--deselect|--ignore",
     re.IGNORECASE,
+)
+# A release is a human's decision (HG3/HG4), yet the version lives in src/ and its notes in
+# CHANGELOG.md, both Tier 1 paths. These recognise the two edits every release makes.
+_ASSIGN = r"(?:\*\*|//|<<|>>|[-+*/%@&|^])?=(?!=)"  # `=` and `+=`, never `==`, `<=` or `!=`
+# A line that assigns `__version__`. Two shapes, because one line can hide it two ways:
+#   - first on the line (indented counts: the fallback branch of a try/except is still the
+#     version), plain, annotated, augmented, parenthesised or leading a tuple target;
+#   - later on the line, as long as no quote or `#` comes first: after a `;`, in a chained or
+#     tuple assignment, or as a walrus.
+# A mention in prose, an import, a comparison (`==`), an attribute (`pkg.__version__`) and
+# `__all__` match neither.
+VERSION_ASSIGNMENT = re.compile(
+    rf"^[\s\ufeff]*[(\[\s]*__version__\s*[)\]]?\s*(?:,[^=#'\"]*)?(?::[^=]*)?{_ASSIGN}"
+    rf"|^[^#'\"]*(?<![.\w])__version__\s*(?::=|=(?!=))"
+)
+# Files that exist to hold the version, where it may be called `version`, `VERSION` or
+# `__version_info__`, and where a bare annotation (`__version__: str`) is part of it too.
+# Those names are ordinary variables anywhere else.
+VERSION_FILES = frozenset({"_version.py", "version.py", "__about__.py", "__version__.py"})
+VERSION_FILE_ASSIGNMENT = re.compile(rf"^[\s\ufeff]*_*version\w*\s*(?::|{_ASSIGN})", re.IGNORECASE)
+# `## [1.7.0] - 2026-11-11`, `## 1.7.0`, `## v1.7.0`, `## Version 1.7.0`, `## **1.7.0**`: a
+# heading that opens with a version, indented up to three spaces as Markdown allows.
+# `## [Unreleased]` does not match, so day-to-day changelog entries stay Tier 1.
+RELEASE_HEADING = re.compile(
+    r"^ {0,3}#{1,6}[\s\[*_]*(?:(?:version|release)\b[\s:\[*_]*)?v?\d+\.\d+", re.IGNORECASE
+)
+# The names a changelog goes by. Only these are read for release headings: `## 1.2 Installing`
+# in a guide is not a release.
+CHANGELOG_NAMES = frozenset(
+    {"changelog.md", "changes.md", "history.md", "news.md", "releases.md", "release-notes.md"}
 )
 
 
@@ -250,6 +281,25 @@ def in_tier1_paths(path: str) -> bool:
     return any(path.startswith(root) and path.endswith(ext) for root, ext in TIER1_ROOTS)
 
 
+def release_reasons(f: FileChange) -> list[str]:
+    """What makes a change part of a release: a new version, or a changelog section for one.
+
+    Removed lines count for the version (deleting it changes the version too), but only
+    added lines for the changelog: tidying an old heading away releases nothing.
+    """
+    name = PurePosixPath(f.path).name.lower()
+    reasons = []
+    if name.endswith(".py"):
+        patterns = [VERSION_ASSIGNMENT]
+        if name in VERSION_FILES:
+            patterns.append(VERSION_FILE_ASSIGNMENT)
+        if any(p.match(ln) for ln in f.added + f.removed for p in patterns):
+            reasons.append(f"{f.path}: changes the package version (a release, HG3/HG4)")
+    if name in CHANGELOG_NAMES and any(RELEASE_HEADING.match(ln) for ln in f.added):
+        reasons.append(f"{f.path}: adds a release section (a release, HG3/HG4)")
+    return reasons
+
+
 def identity_reasons(pr: PullRequest, authors: frozenset[str]) -> list[str]:
     """Everyone who triggered, pushed to or wrote commits on the branch must be allowlisted.
 
@@ -293,7 +343,7 @@ def classify_change(
     for f in files:
         if not in_tier1_paths(f.path):
             reasons.append(f"{f.path}: outside the paths Tier 1 may touch")
-        reasons += file_shape_reasons(f)
+        reasons += file_shape_reasons(f) + release_reasons(f)
         removed_tests += sum(1 for ln in f.removed if TEST_DEF.match(ln))
         added_tests += sum(1 for ln in f.added if TEST_DEF.match(ln))
         weak = [ln for ln in f.added if WEAKENING.search(ln)]
